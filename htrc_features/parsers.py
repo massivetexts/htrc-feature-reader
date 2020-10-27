@@ -16,6 +16,10 @@ try:
 except ImportError:
     import json
 
+# pyarrow placeholder
+pa = None
+feather = None
+
 import requests
 
 from . import utils, resolvers
@@ -282,7 +286,7 @@ class JsonFileHandler(BaseFileHandler):
     def _parse_json(self, compression='default', **kwargs):
         id = self.id
         resolver = self.id_resolver
-        if compression is 'default':
+        if compression == 'default':
             compression = self.id_resolver.compression
         
         for k in self.args:
@@ -591,3 +595,144 @@ class ParquetFileHandler(BaseFileHandler):
     def _parse_meta(self):
         pass
     
+class ArrowFileHandler(BaseFileHandler):
+    '''
+        This Volume parser allows for Feature Reader data to be loaded from an
+        Apache Arrow "Feather" format, which is somewhat similar to parquet.
+        Its major advantage in this case is that it can store the metadata_schema_version
+        inside the binary serialized file, so we can use a single file
+        to store the most commonl used data.
+        
+        It uses a single file to hold only tokencounts.
+        
+        These are essentially what is held internally in a Volume (vol.parser.meta,
+        vol._tokencounts, vol._line_chars, vol._section_features) so 
+        this parser doesn't provide much fanciness beyond loading.
+        
+    '''
+        
+    
+    def __init__(self, id, id_resolver, mode = 'rb', compression = 'gz', **kwargs):
+        global pa
+        global feather
+        if pa is None:
+            import pyarrow as pa
+        if feather is None:
+            import pyarrow.feather as feather
+        self.format = "feather"
+        self.compression = compression
+
+        super().__init__(id = id, id_resolver = id_resolver, compression = compression,
+                         mode = mode,  **kwargs)
+    def parse(self, **kwargs):
+        if self.compression == "gz":
+            compression = "gz"
+        else:
+            compression = None
+        self.file = self.id_resolver.open(self.id, compression = compression)
+        self.table = feather.read_table(self.file)
+                
+        self.meta = json.loads(self.table.schema.metadata[b'meta'].decode("utf-8"))
+        if not self.meta['id']:
+            self.meta['id'] = htrc_features.utils.extract_htid(self.id)
+        
+        if not 'handle_url' in self.meta or not self.meta['handle_url']:
+            self.meta['handle_url'] = "http://hdl.handle.net/2027/%s" % self.meta['id']
+            
+        if not 'title' in self.meta or not self.meta['title']:
+            self.meta['title'] = self.meta['id']
+
+        
+    def write(self, volume, files = ["tokens"],
+              mode='wb', compression="default", indexed=True,
+              token_kwargs="default",
+              **kwargs):
+        '''
+
+        Save the internal representations of feature data to parquet, and the metadata to json,
+        using the naming convention used by ParquetFileHandler.
+        
+        The primary use is for converting the feature files to something more efficient. By default,
+        only metadata and tokencounts are saved.
+        
+        files lists which files you want to get. Default is 'meta', and 'tokens'.
+        Also allowed are 'chars' (character counts) and 'section_features'
+
+
+        'volume' is an object of the 'Volume' class which will be used for data. It will
+        almost certainly need to come from a true JSON file.
+
+        Saving page features is currently unsupported, as it's an ill-fit for parquet. This is currently
+        just the language-inferences for each page - everything else is in section features 
+        (page by body/header/footer).
+        
+        Since Volumes partially support incomplete dataframes, you can pass Volume.tokenlist arguments
+        as a dict with token_kwargs. For example, if you want to save a representation with only body
+        information, drop the 'section' level of the index, and fold part-of-speech counts, you can pass
+        token_kwargs=dict(section='body', drop_section=True, pos=False).
+        '''
+
+        if token_kwargs == "default":
+            token_kwargs = dict(section='all', drop_section=False)
+                
+        if compression == "default":
+            compression = self.id_resolver.compression
+
+        if len(files) == 0:
+            logging.warning("You're not saving anything with save_parquet")
+            return
+
+        for f in files:
+            assert(f in ['tokens', 'chars', 'section_features'])
+            
+        schema = pa.schema(
+            [
+                pa.field("page", pa.uint32()),
+                pa.field("section", pa.dictionary(pa.int8(), pa.utf8())),
+                pa.field("token", pa.dictionary(pa.int32(), pa.utf8())),
+                pa.field("pos", pa.dictionary(pa.int8(), pa.utf8())),
+                pa.field("count", pa.uint16())
+            ])
+
+        with self.id_resolver as resolver:                    
+            if 'tokens' in files:
+                try:
+                    counts = volume.tokenlist(**token_kwargs)
+                except:
+                    raise
+                    # If the internal representation is incomplete, returning the above may fail,
+                    # but the cache may have an acceptable dataset to return
+                    counts = volume._tokencounts
+                counts = counts.reset_index()
+                counts['section'] = counts['section'].astype("category")
+                counts.sort_values(["token", "page"])
+                counts['token'] = counts['token'].astype("category")
+                counts['pos'] = counts['pos'].astype("category")
+
+                table = pa.table(counts, schema = schema.with_metadata({"meta": json.dumps(volume.parser.meta)}))
+                
+                compression_name = "uncompressed"
+                if compression in ["lzw", "zstd"]:
+                    compression_name = compression
+                with resolver.open(id = self.id, mode=mode, **kwargs) as fout:
+                    feather.write_feather(table, fout, compression=compression_name)
+
+    def _make_tokencount_df(self):
+        try:
+            with self.id_resolver.open(id = self.id, format = 'feather') as fin:
+                df = feather.read_feather(fin)
+        except IOError:
+            raise MissingDataError("No token information available")
+        for colname in ["section", "token", "pos"]:
+            df[colname] = df[colname].astype("object")
+
+        indcols = [col for col in ['page', 'section', 'token', 'lowercase', 'pos'] if col in df.columns]
+        if len(indcols):
+            df = df.set_index(indcols)
+        return df
+            
+    def _make_page_feature_df(self):
+        raise Exception("parquet parser doesn't support non-token, non-section page features")
+
+    def _parse_meta(self):
+        pass

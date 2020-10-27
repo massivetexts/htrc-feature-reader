@@ -9,6 +9,7 @@ import codecs
 import os
 import warnings
 import tempfile
+import pathlib
 
 from htrc_features import utils
 from htrc_features import parsers, resolvers, transformations
@@ -312,7 +313,8 @@ def filename_or_id(string):
     """
     Determine based on suffix is something is a file or an ide.
     """
-    for ending in [".gz", ".bz2", ".json", ".parquet"]:
+    
+    for ending in [".gz", ".bz2", ".json", ".parquet", ".feather"]:
         if string.endswith(ending):
             return "filename"
     if "." in string[:6]:
@@ -334,6 +336,8 @@ def retrieve_parser(id, format, id_resolver, compression, dir=None,
         Handler = parsers.JsonFileHandler
     elif format == "parquet":
         Handler = parsers.ParquetFileHandler
+    elif format == "feather":
+        Handler = parsers.ArrowFileHandler
     else:
         raise NotImplementedError("Must pass a format. Currently 'json' and 'parquet' are supported.")
     
@@ -402,6 +406,9 @@ class Volume(object):
         if path == False:
             warnings.warn("Please use None to indicate lack of a path", DeprecationWarning)
             path = None
+        if isinstance(path, pathlib.Path):
+            # Could also insist on a path interface, but this should work
+            path = str(path)
             
         if 'compressed' in kwargs:
             warning.warn("Use 'compression' argument. `compressed` has been deprecated.")
@@ -409,7 +416,7 @@ class Volume(object):
                 compression = None
             elif kwargs['compressed'] == True:
                 compression = 'bz2'
-                
+        
         if format == "default":
             # Allow learning the format from the resolver.
             if isinstance(id_resolver, resolvers.IdResolver):
@@ -423,7 +430,7 @@ class Volume(object):
                 # The actual default
                 format = "json"
                 
-        assert format in ["json", "parquet"]
+        # assert format in ["json", "parquet"]
 
         if compression == 'default':
             if isinstance(id_resolver, resolvers.IdResolver):
@@ -435,6 +442,8 @@ class Volume(object):
                     compression = 'snappy'
                 elif format == 'json':
                     compression = "bz2"
+                elif format == 'feather':
+                    compression = "gz"
 
         if id_resolver is None:
             id_resolver = default_resolver(id, path, format, dir)
@@ -512,7 +521,7 @@ class Volume(object):
         if page_select:
             df = df.xs(page_select, level='page', drop_level=False)
         
-        if feature is not 'all':
+        if feature != 'all':
             df = df[feature]
 
         if section in ['header', 'body', 'footer']:

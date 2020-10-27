@@ -56,7 +56,7 @@ class IdResolver():
 
         """
         clean_id = clean_htid(id)
-        if format == "parquet":
+        if format == "parquet" or (format == "arrow" and compression != "gz"):
             # Because it's not in the parquet filename.
             compression = None
         fname = [clean_id, suffix, format, compression]
@@ -77,7 +77,8 @@ class IdResolver():
             return bz2.open(buffer, mode)
         elif compression == "gz":
             return gzip.open(buffer, mode)
-
+        elif format=="arrow":
+            return buffer
         
     def __enter__(self):
         return self
@@ -194,7 +195,7 @@ class LocalResolver(IdResolver):
     
     def _open(self, id, format = None, mode = 'rb', compression='default', dir=None, suffix=None, **kwargs):
 
-        if compression is 'default':
+        if compression == 'default':
             compression = self.compression
         if not dir:
             dir = self.dir
