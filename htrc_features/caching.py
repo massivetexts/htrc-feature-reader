@@ -10,11 +10,11 @@ def copy_between_resolvers(id, resolver1, resolver2):
     input = Volume(id, id_resolver=resolver1)
     output = Volume(id, id_resolver=resolver2, mode = 'wb')
     output.write(input)
-    
+
 def make_fallback_resolver(preferred, fallback = None, cache = True):
     """
 
-    A function to return a constructor that uses 
+    A function to return a constructor that uses
     a cache.
 
     If 'fallback' is None, the actual fallback creation can be handled by the user (usually by
@@ -23,20 +23,20 @@ def make_fallback_resolver(preferred, fallback = None, cache = True):
     """
     if preferred in resolver_nicknames:
         preferred = resolver_nicknames[preferred]
-    
+
     class FallbackResolver(preferred):
 
         """
         A cache resolver is a resolver that uses either of two methods.
 
         It's called with the constructors of both arguments. If you have options
-        for the fallback, they must be passed as dict in the first argument; 
+        for the fallback, they must be passed as dict in the first argument;
         then the rest of the args are passed as normal.
         """
 
         def __init__(self, fallback_kwargs = {}, **preferred_args):
             if fallback in resolver_nicknames:
-                self.fallback = resolver_nicknames[fallback](**fallback_kwargs)       
+                self.fallback = resolver_nicknames[fallback](**fallback_kwargs)
             elif isinstance(fallback, resolvers.IdResolver):
                 self.fallback = fallback
             elif issubclass(fallback, resolvers.IdResolver):
@@ -48,17 +48,17 @@ def make_fallback_resolver(preferred, fallback = None, cache = True):
 
             # Keep a super instance around for copying.
             self.super = preferred(**preferred_args)
-            
-            super().__init__(**preferred_args)            
+
+            super().__init__(**preferred_args)
 
         def open(self, id, fallback_kwargs = {}, **kwargs):
-            
+
             """
             Open a file with a fallback method.
 
 
             kwargs: a set of arguments that will be passed to open.
-          
+
             """
             if len(fallback_kwargs) != 0:
                 logging.warn("""You seem to be passing kwargs to a fallback
@@ -79,12 +79,12 @@ def make_fallback_resolver(preferred, fallback = None, cache = True):
                     raise e
                 if not cache:
                     input = Volume(id, id_resolver=self.fallback, **fallback_kwargs)
+                    return self.fallback.open(id)
                     return input.parser.open(id, **fallback_kwargs)
                 else:
                     copy_between_resolvers(id, self.fallback, self.super)
                     fout = super().open(id, **kwargs)
                     logging.debug("Successfully returning from cache")
-                    return fout           
-            
-    return FallbackResolver
+                    return fout
 
+    return FallbackResolver
